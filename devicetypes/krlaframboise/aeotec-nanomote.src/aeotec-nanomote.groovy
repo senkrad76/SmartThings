@@ -1,5 +1,5 @@
 /**
- *  Aeotec NanoMote One/Quad v1.0
+ *  Aeotec NanoMote One/Quad v1.1.1
  *  (Models: ZWA003-A/ZWA004-A)
  *
  *  Hank Scene Controller/Hank Four-Key Scene Controller
@@ -9,6 +9,20 @@
  *    Kevin LaFramboise (krlaframboise)
  *
  *  Changelog:
+ *
+ *    1.1.1 (09/26/2020)
+ *      - Implemented single button child devices for buttons 2-4, but didn't remove those buttons from the parent device for backwards compability.
+ *      - YOU MUST INSTALL MY CHILD BUTTON DTH
+ *
+ *    1.0.2 (03/14/2020)
+ *      - Removed vid because it breaks the new mobile app.
+ *
+ *    1.0.1 (07/19/2019)
+ *      - Added meta definitions for new mobile app. 
+ *			- Set value of supportedButtonValues attribute for new mobile app.
+ *      - Set default value of numberOfButtons to 4. 
+ *			- Added sequence number check to prevent duplicate button pushes.
+ *			- Added support for button released in the new mobile app, but I had to use the "double" event because the button capability doesn't support the "released" event.
  *
  *    1.0 (05/26/2018)
  *      - Initial Release
@@ -28,7 +42,8 @@ metadata {
 	definition (
 		name: "Aeotec NanoMote", 
 		namespace: "krlaframboise", 
-		author: "Kevin LaFramboise"
+		author: "Kevin LaFramboise",
+		ocfDeviceType: "x.com.st.d.remotecontroller"
 	) {
 		capability "Sensor"
 		capability "Battery"
@@ -50,7 +65,11 @@ metadata {
 	
 	simulator { }
 	
-	preferences {
+	preferences {		
+		input "backwardsCompatible", "bool", 
+			title: "Create events on parent device for buttons 2-4?", 
+			defaultValue: false, 
+			required: false
 		input "debugOutput", "bool", 
 			title: "Enable debug logging?", 
 			defaultValue: true, 
@@ -80,12 +99,22 @@ metadata {
 }
 
 
+def installed() {
+	state.pendingRefresh = true
+	state.newInstall = true
+	
+	initialize()
+}
+
+
 def updated() {	
 	// This method always gets called twice when preferences are saved.
 	if (!isDuplicateCommand(state.lastUpdated, 3000)) {		
 		state.lastUpdated = new Date().time
 		logTrace "updated()"
-
+		
+		initialize()
+		
 		logForceWakeupMessage "The configuration will be updated the next time the device wakes up."		
 	}		
 }
@@ -94,6 +123,53 @@ private isDuplicateCommand(lastExecuted, allowedMil) {
 	!lastExecuted ? false : (lastExecuted + allowedMil > new Date().time) 
 }
 
+
+private initialize() {
+	if (!device.currentValue("numberOfButtons")) {
+		sendEvent(name:"numberOfButtons", value:4, displayed: false)	
+	}
+	if (!device.currentValue("supportedButtonValues")) {
+		sendEvent(name: "supportedButtonValues", value: ["pushed", "held", "double"].encodeAsJSON(), displayed: false)
+	}
+	
+	runIn(5, createChildButtons)
+}
+
+def createChildButtons() {	
+	if (device.currentValue("numberOfButtons") == 4) {
+		def children = childDevices
+		
+		(2..4).each { btnNum ->
+			if (!children?.find { it.getDataValue("btnNum") == btnNum.toString() }) {
+				addChildButton(btnNum)				
+			}
+		}		
+	}
+}
+
+private addChildButton(btnNum) {	
+	logDebug "Creating child for button ${btnNum}"
+	
+	try {
+		def child = addChildDevice(
+			"krlaframboise",
+			"Child Button",
+			"${device.deviceNetworkId}-Button${btnNum}", 
+			device.getHub().getId(), 
+			[
+				completedSetup: true,
+				isComponent: false,
+				label: "${device.displayName}-${btnNum}",
+				data: [btnNum: btnNum.toString()]
+			]
+		)
+		child?.sendEvent(name:"supportedButtonValues", value:["pushed", "held", "double"].encodeAsJSON(), displayed:false)		
+	}
+	catch (e) {
+		log.warn "You must have the krlaframboise Child Button DTH installed in order to use the child button devices"
+	}
+}
+	
 
 def configure() {
 	logDebug "configure()"
@@ -183,33 +259,45 @@ def zwaveEvent(physicalgraph.zwave.commands.batteryv1.BatteryReport cmd) {
 def zwaveEvent(physicalgraph.zwave.commands.centralscenev1.CentralSceneNotification cmd) {
 	logTrace "CentralSceneNotification: ${cmd}"
 	
-	def btn = cmd.sceneNumber
-	def action	
-	switch (cmd.keyAttributes) {
-		case 0:
-			action = "pushed"
-			break
-		case 1:			
-			// Ignore button released event.
-			break
-		case 2:
-			action = "held"
-			break
-	}
-	
-	if (action) {
-		sendButtonEvent(btn, action)
+	if (state.lastSequenceNumber != cmd.sequenceNumber) {	
+		state.lastSequenceNumber = cmd.sequenceNumber
+		
+		def btn = cmd.sceneNumber
+		def action	
+		switch (cmd.keyAttributes) {
+			case 0:
+				action = "pushed"
+				break
+			case 1:			
+				action = "double" // Released
+				break
+			case 2:
+				action = "held"
+				break
+		}
+		
+		if (action) {
+			if ((btn == 1) || (settings?.backwardsCompatible == true) || (!state.newInstall && (settings?.backwardsCompatible != false))) {
+				sendButtonEvent(btn, action)
+			}
+			
+			if (btn > 1) {
+				sendChildButtonEvent(childDevices.find { it.getDataValue("btnNum") == btn.toString() }, action)
+			}
+		}
 	}
 	return []
 }
 
 private sendButtonEvent(btn, action) {
-	logDebug "Button ${btn} ${action}"
+	if (btn == 1) {
+		logDebug "Button ${btn} ${action}" + (action == "double" ? " (released)" : "")
+	}
 	
 	def lastAction = (device.currentValue("numberOfButtons") == 1) ? "${action}" : "${action} ${btn}"
 
 	sendEvent(name:"lastAction", value: "${lastAction}".toUpperCase(), displayed: false)
-	
+		
 	sendEvent(
 		name: "button", 
 		value: "${action}", 
@@ -217,6 +305,20 @@ private sendButtonEvent(btn, action) {
 		data: [buttonNumber: btn],
 		displayed: true,
 		isStateChange: true)
+}
+
+private sendChildButtonEvent(child, action) {
+	if (child) {
+		logDebug "${child.displayName} ${action}" + (action == "double" ? " (released)" : "")
+		
+		child.sendEvent(
+			name: "button",
+			value: action,
+			descriptionText: "${child.displayName} Pushed",
+			data: [buttonNumber: 1],
+			displayed: true,
+			isStateChange: true)
+	}
 }
 
 
@@ -228,7 +330,9 @@ def zwaveEvent(physicalgraph.zwave.commands.manufacturerspecificv2.ManufacturerS
 		// Aeotec NanoMote One or Hank Scene Controller
 		btnCount = 1
 	}
-	sendEvent(name: "numberOfButtons", value: btnCount)
+	if (btnCount != device.currentValue("numberOfButtons")) {
+		sendEvent(name: "numberOfButtons", value: btnCount)
+	}
 	return []
 }
 
@@ -304,6 +408,11 @@ private getCommandClassVersions() {
 }
 
 
+private getChildByBtnNum(btnNum) {
+	return childDevices?.find { it.getDataValue("btnNum") == btnNum.toString() }
+}
+
+
 private convertToLocalTimeString(dt) {
 	try {
 		def timeZoneId = location?.timeZone?.ID
@@ -342,5 +451,5 @@ private logDebug(msg) {
 }
 
 private logTrace(msg) {
-	// log.trace "$msg"
+  // log.trace "$msg"
 }

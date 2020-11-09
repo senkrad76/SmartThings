@@ -1,16 +1,33 @@
 /**
- *  Zooz Power Strip VER 2.0
+ *  Zooz Power Strip VER 2.0 (v2.2.5)
  *  (Models: ZEN20)
  *
  *  Author: 
  *    Kevin LaFramboise (krlaframboise)
  *
- *  Important Instructions: http://www.support.getzooz.com/kb/article/149-how-to-add-your-power-strip-ver-20-to-smartthings/
- *
  *	Documentation: https://community.smartthings.com/t/release-zooz-power-strip-ver-2-0/138231?u=krlaframboise
  *
  *
  *  Changelog:
+ *
+ *    2.2.5 (09/27/2020)
+ *      - Added support for Refresh command of USB port.
+ *      - Increase default reporting intervals to improve reliability of on/off states
+ *
+ *    2.2.4 (09/26/2020)
+ *      - Create child devices for USB Ports using the USB Port Child DTH.
+ *
+ *    2.2.3 (08/16/2020)
+ *      - Removed componentLabel and componentName from child outlet devices which fixes the timeout issue in the new mobile app.
+ *
+ *    2.2.2 (08/10/2020)
+ *      - Added ST workaround for S2 Supervision bug with MultiChannel Devices.
+ *
+ *    2.2.1 (03/13/2020)
+ *      - Fixed bug with enum settings that was caused by a change ST made in the new mobile app.
+ *
+ *    2.2 (08/25/2019)
+ *      - Added new configuration parameters for firmware 2.2.
  *
  *    2.1.0 (11/05/2018)
  *      - Removed USB Child Device
@@ -237,7 +254,7 @@ private getOptionsInput(param) {
 	input "configParam${param.num}", "enum",
 		title: "${param.name}:",
 		required: false,
-		defaultValue: "${param.value}",
+		defaultValue: param.value.toString(),
 		displayDuringSetup: true,
 		options: param.options
 }
@@ -259,7 +276,7 @@ def installed () {
 def updated() {	
 	if (!isDuplicateCommand(state.lastUpdated, 3000)) {
 		state.lastUpdated = new Date().time
-		
+
 		unschedule()
 		
 		runIn(2, updateSecondaryStatus)
@@ -292,17 +309,20 @@ def createChildDevices() {
 		}
 	}
 	
-	(6..7).each { endPoint ->		
-		def dni = "${getChildDeviceNetworkId(endPoint)}"
-		if (!findChildByDeviceNetworkId(dni)) {	
-			// try {
-				// addChildUSB("krlaframboise", "Zooz Power Strip USB VER 2.0", dni, endPoint)
-			// }
-			// catch (e) {
-				// addChildUSB("smartthings", "Virtual Switch", dni, endPoint)
-			// }
-			addChildUSB("smartthings", "Virtual Switch", dni, endPoint)
-			cmds << switchBinaryGetCmd(endPoint)
+	if (usbReportingEnabledParam.value != false) {
+		(6..7).each { endPoint ->		
+			def dni = "${getChildDeviceNetworkId(endPoint)}"		
+			if (!findChildByDeviceNetworkId(dni)) {	
+				try {
+					addChildUSB("krlaframboise", "Child USB Port", dni, endPoint)	
+				}
+				catch (e) {
+					log.warn "The 'Child USB Port' DTH is not installed so using 'Virtual Switch' instead"
+					addChildUSB("smartthings", "Virtual Switch", dni, endPoint)	
+				}
+			
+				cmds << switchBinaryGetCmd(endPoint)
+			}
 		}
 	}
 	return cmds ? delayBetween(cmds, 1000) : []
@@ -318,9 +338,7 @@ private addChildOutlet(dni, endPoint) {
 		[
 			completedSetup: true,
 			isComponent: false,
-			label: "${device.displayName}-CH${endPoint}",
-			componentLabel: "CH ${endPoint}",
-			componentName: "CH${endPoint}"
+			label: "${device.displayName}-CH${endPoint}"
 		]
 	)
 }
@@ -332,13 +350,11 @@ private addChildUSB(namespace, deviceType, dni, endPoint) {
 		namespace,
 		deviceType,
 		dni, 
-		null, 
+		device.getHub().getId(), 
 		[
 			completedSetup: true,
-			isComponent: true,
-			label: "${device.displayName}-USB${usb}",
-			componentName: "USB${usb}",
-			componentLabel: "USB ${usb} (READ-ONLY)"
+			isComponent: false,
+			label: "${device.displayName}-USB${usb}"
 		]
 	)
 }
@@ -350,12 +366,10 @@ def configure() {
 	runIn(10, updateSyncStatus)
 			
 	def cmds = []
-	def delay = 250
-	
-	if (!device.currentValue("firmwareVersion")) {
-		cmds << versionGetCmd()
-		cmds << "delay ${delay}"
-	}
+	def delay = 500
+
+	cmds << versionGetCmd()
+	cmds << "delay ${delay}"
 	
 	if (device.currentValue("power") == null) {
 		cmds += getRefreshCmds()
@@ -506,10 +520,11 @@ def refresh() {
 	childDevices.each {
 		def dni = it.deviceNetworkId
 		def endPoint = getEndPoint(dni)		
-		if (!isUsbEndPoint(endPoint)) {
-			cmds << "delay 250"
-			cmds += getRefreshCmds(dni)
+		
+		cmds << "delay 250"
+		cmds += getRefreshCmds(dni)
 			
+		if (!isUsbEndPoint(endPoint)) {
 			if (!device.currentValue("ch${endPoint}Name")) {
 				childUpdated(dni)
 			}
@@ -525,11 +540,18 @@ def childRefresh(dni) {
 
 private getRefreshCmds(dni=null) {
 	def endPoint = getEndPoint(dni)
-	delayBetween([ 
-		switchBinaryGetCmd(endPoint),
-		meterGetCmd(meterEnergy, endPoint),
-		meterGetCmd(meterPower, endPoint)
-	], 250)
+	def cmds = [	
+		switchBinaryGetCmd(endPoint)
+	]
+	
+	if (!isUsbEndPoint(endPoint)) {
+		cmds += [ 
+			meterGetCmd(meterEnergy, endPoint),
+			meterGetCmd(meterPower, endPoint)
+		]	
+	}
+	
+	return delayBetween(cmds, 250)
 }
 
 
@@ -699,7 +721,17 @@ def zwaveEvent(physicalgraph.zwave.commands.securityv1.SecurityMessageEncapsulat
 
 
 def zwaveEvent(physicalgraph.zwave.commands.multichannelv3.MultiChannelCmdEncap cmd) {
-	def encapsulatedCommand = cmd.encapsulatedCommand([0x31: 3])
+	// Workaround that was added to all SmartThings Multichannel DTHs.
+	if (cmd.commandClass == 0x6C && cmd.parameter.size >= 4) { // Supervision encapsulated Message
+		// Supervision header is 4 bytes long, two bytes dropped here are the latter two bytes of the supervision header
+		cmd.parameter = cmd.parameter.drop(2)
+		// Updated Command Class/Command now with the remaining bytes
+		cmd.commandClass = cmd.parameter[0]
+		cmd.command = cmd.parameter[1]
+		cmd.parameter = cmd.parameter.drop(2)
+	}
+	
+	def encapsulatedCommand = cmd.encapsulatedCommand(commandClassVersions)
 	
 	if (encapsulatedCommand) {
 		return zwaveEvent(encapsulatedCommand, cmd.sourceEndPoint)
@@ -959,6 +991,11 @@ private getConfigParams() {
 	params += autoOffIntervalParams
 	params += autoOnEnabledParams
 	params += autoOnIntervalParams
+	
+	if (isSupportedFirmware(2.2)) {
+		params += meterReportingEnabledParams
+		params << usbReportingEnabledParam
+	}
 
 	return params?.sort { it.num }
 }
@@ -977,7 +1014,7 @@ private getPowerReportingFrequencyParam() {
 }
 
 private getEnergyReportingFrequencyParam() {
-	return getParam(4, "Energy Reporting Frequency", 4, 300, frequencyOptions) 
+	return getParam(4, "Energy Reporting Frequency", 4, 3600, frequencyOptions) 
 }
 
 private getOverloadProtectionParam() {
@@ -1033,6 +1070,23 @@ private getLedIndicatorModeParam() {
 	return getParam(27, "LED Indicator Mode", 1, 1, [0:"LED On When Switch Off", 1:"LED On When Switch On", 2:"LED Always Off"])
 }
 
+private getMeterReportingEnabledParams() {
+	def params = []
+	
+	params << getParam(28, "Meter Reporting Enabled (FIRWARE >= 2.2)", 1, 1, enabledOptions)
+	
+	def ch = 1
+	(29..33).each {
+		params << getParam(it, "CH${ch} Meter Reporting Enabled (FIRWARE >= 2.2)", 1, 1, enabledOptions)
+		ch += 1
+	}	
+	return params
+}
+
+private getUsbReportingEnabledParam() {
+	return getParam(34, "USB Reporting Enabled (FIRWARE >= 2.2)", 1, 1, enabledOptions)
+}
+
 private getParam(num, name, size, defaultVal, options=null) {
 	def val = safeToInt((settings ? settings["configParam${num}"] : null), defaultVal) 
 	
@@ -1046,7 +1100,7 @@ private getParam(num, name, size, defaultVal, options=null) {
 }
 
 private setDefaultOption(options, defaultVal) {
-	return options?.collect { k, v ->
+	return options?.collectEntries { k, v ->
 		if ("${k}" == "${defaultVal}") {
 			v = "${v} [DEFAULT]"		
 		}
@@ -1143,6 +1197,11 @@ private executeSendEvent(child, evt) {
 				logDebug "${evt.descriptionText}"
 			}
 			child.sendEvent(evt)						
+			
+			if ((evt.name == "switch") && (child.deviceNetworkId.endsWith("USB1") || child.deviceNetworkId.endsWith("USB2"))) {
+				evt.name = "usbPort"
+				child.sendEvent(evt)
+			}
 		}
 		else {
 			sendEvent(evt)
@@ -1212,12 +1271,17 @@ private isOriginalFirmware() {
 	return "${fw}" == "1.0"
 }
 
+private isSupportedFirmware(minFirmware) {
+	def fw = device?.currentValue("firmwareVersion")
+	return fw ? safeToDec(fw) >= minFirmware : true
+}
+
 
 private safeToInt(val, defaultVal=0) {
 	return "${val}"?.isInteger() ? "${val}".toInteger() : defaultVal
 }
 
-private safeToDec(val, defaultVal=0) {
+private safeToDec(val, defaultVal=0.0) {
 	return "${val}"?.isBigDecimal() ? "${val}".toBigDecimal() : defaultVal
 }
 

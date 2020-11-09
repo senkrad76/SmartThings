@@ -1,5 +1,5 @@
 /**
- *  Zooz Double Plug v1.2.2
+ *  Zooz Double Plug v1.3.2
  *  (Models: ZEN25)
  *
  *  Author: 
@@ -8,6 +8,25 @@
  *	Documentation:
  *
  *  Changelog:
+ *
+ *    1.3.2 (09/27/2020)
+ *      - Added support for Refresh command of USB port.
+ *      - Increase default reporting intervals to improve reliability of on/off states
+ *
+ *    1.3.1 (09/26/2020)
+ *      - Previous version replaced the child component device with a regular child, but it didn't use the new child usb port handler so this version corrects that.
+ *
+ *    1.3 (09/21/2020)
+ *      - Create child device for USB Port using the USB Port Child DTH.
+ *
+ *    1.2.5 (08/16/2020)
+ *      - Removed componentLabel and componentName from child outlet devices which fixes the timeout issue in the new mobile app.
+ *
+ *    1.2.4 (08/10/2020)
+ *      - Added ST workaround for S2 Supervision bug with MultiChannel Devices.
+ *
+ *    1.2.3 (03/14/2020)
+ *      - Fixed bug with enum settings that was caused by a change ST made in the new mobile app.
  *
  *    1.2.2 (02/03/2019)
  *      - Fixed unit on Power Threshold setting.
@@ -25,16 +44,26 @@
  *      - Initial Release
  *
  *
- *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
- *  in compliance with the License. You may obtain a copy of the License at:
+ *
+ *  Copyright 2020 Kevin LaFramboise
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
  *
  *      http://www.apache.org/licenses/LICENSE-2.0
  *
- *  Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
- *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
- *  for the specific language governing permissions and limitations under the License.
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
  *
- */
+*/
+import groovy.transform.Field
+
+@Field static int usbEndPoint = 3
+
 metadata {
 	definition (
 		name: "Zooz Double Plug", 
@@ -234,17 +263,28 @@ def createChildDevices() {
 		if (!findChildByEndPoint(endPoint)) {			
 			def dni = "${getChildDeviceNetworkId(endPoint)}"
 			
-			addChildOutlet(dni, endPoint)
-			childUpdated(dni)
-			
-			sendCommands(childReset(dni))
+			try {
+				addChildOutlet(dni, endPoint)
+				childUpdated(dni)
+				
+				sendCommands(childReset(dni))
+			}
+			catch (e) {
+				log.error "Unable to create child devices for outlets because the 'Zooz Double Plug Outlet' DTH is not installed"
+			}
 		}
 	}
 	
-	def dni = "${getChildDeviceNetworkId(3)}"
+	def dni = "${getChildDeviceNetworkId(usbEndPoint)}"
 	if (!findChildByDeviceNetworkId(dni)) {	
-		addChildUSB("smartthings", "Virtual Switch", dni)
-		sendCommands([switchBinaryGetCmd(3)])
+		try {
+			addChildUSB("krlaframboise", "Child USB Port", dni)	
+		}
+		catch (e) {
+			log.warn "The 'Child USB Port' DTH is not installed so using 'Virtual Switch' instead"
+			addChildUSB("smartthings", "Virtual Switch", dni)	
+		}
+		sendCommands([switchBinaryGetCmd(usbEndPoint)])
 	}	
 }
 
@@ -260,9 +300,7 @@ private addChildOutlet(dni, endPoint) {
 		[
 			completedSetup: true,
 			isComponent: false,
-			label: "${device.displayName}-${name}",
-			componentLabel: "${name}",
-			componentName: "${name}"
+			label: "${device.displayName}-${name}"
 		]
 	)
 }
@@ -276,10 +314,8 @@ private addChildUSB(namespace, deviceType, dni) {
 		device.getHub().getId(), 
 		[
 			completedSetup: true,
-			isComponent: true,
-			label: "${device.displayName}-USB",
-			componentName: "USB",
-			componentLabel: "USB (READ-ONLY)"
+			isComponent: false,
+			label: "${device.displayName}-USB"
 		]
 	)
 }
@@ -419,11 +455,10 @@ def refresh() {
 		def endPointName = getEndPointName(endPoint)		
 		
 		cmds << "delay 250"
-		if (endPointName == "usb") {
-			cmds << switchBinaryGetCmd(endPoint)
-		}
-		else {
-			cmds += getRefreshCmds(dni)
+		
+		cmds += getRefreshCmds(dni)
+		
+		if (endPoint != usbEndPoint) {			
 			if (!device.currentValue("${endPointName}Name")) {
 				childUpdated(dni)
 			}
@@ -440,13 +475,20 @@ def childRefresh(dni) {
 
 private getRefreshCmds(dni=null) {
 	def endPoint = getEndPoint(dni)
-	delayBetween([ 
-		switchBinaryGetCmd(endPoint),
-		meterGetCmd(meterEnergy, endPoint),
-		meterGetCmd(meterPower, endPoint),
-		meterGetCmd(meterVoltage, endPoint),
-		meterGetCmd(meterCurrent, endPoint)
-	], 250)
+	def cmds = [
+		switchBinaryGetCmd(endPoint)
+	]
+	
+	if (endPoint != usbEndPoint) {
+		cmds += [
+			meterGetCmd(meterEnergy, endPoint),
+			meterGetCmd(meterPower, endPoint),
+			meterGetCmd(meterVoltage, endPoint),
+			meterGetCmd(meterCurrent, endPoint)
+		]
+	}	
+	
+	return delayBetween(cmds, 250)
 }
 
 
@@ -610,7 +652,17 @@ def zwaveEvent(physicalgraph.zwave.commands.securityv1.SecurityMessageEncapsulat
 
 
 def zwaveEvent(physicalgraph.zwave.commands.multichannelv3.MultiChannelCmdEncap cmd) {
-	def encapsulatedCommand = cmd.encapsulatedCommand([0x31: 3])
+	// Workaround that was added to all SmartThings Multichannel DTHs.
+	if (cmd.commandClass == 0x6C && cmd.parameter.size >= 4) { // Supervision encapsulated Message
+		// Supervision header is 4 bytes long, two bytes dropped here are the latter two bytes of the supervision header
+		cmd.parameter = cmd.parameter.drop(2)
+		// Updated Command Class/Command now with the remaining bytes
+		cmd.commandClass = cmd.parameter[0]
+		cmd.command = cmd.parameter[1]
+		cmd.parameter = cmd.parameter.drop(2)
+	}
+	
+	def encapsulatedCommand = cmd.encapsulatedCommand(commandClassVersions)
 	
 	if (encapsulatedCommand) {
 		return zwaveEvent(encapsulatedCommand, cmd.sourceEndPoint)
@@ -878,19 +930,19 @@ private getPowerReportingThresholdParam() {
 }
 
 private getPowerReportingFrequencyParam() {
-	return getParam(3, "Power Reporting Frequency", 4, 30, frequencyOptions)
+	return getParam(3, "Power Reporting Frequency", 4, 300, frequencyOptions)
 }
 
 private getEnergyReportingFrequencyParam() {
-	return getParam(4, "Energy Reporting Frequency", 4, 300, frequencyOptions) 
+	return getParam(4, "Energy Reporting Frequency", 4, 3600, frequencyOptions) 
 }
 
 private getVoltageReportingFrequencyParam() {
-	return getParam(5, "Voltage Reporting Frequency", 4, 300, frequencyOptions) 
+	return getParam(5, "Voltage Reporting Frequency", 4, 900, frequencyOptions) 
 }
 
 private getAmpsReportingFrequencyParam() {
-	return getParam(6, "Electrical Current Reporting Frequency", 4, 300, frequencyOptions) 
+	return getParam(6, "Electrical Current Reporting Frequency", 4, 900, frequencyOptions) 
 }
 
 private getOverloadProtectionParam() {
@@ -950,7 +1002,7 @@ private getParam(num, name, size, defaultVal, options=null) {
 }
 
 private setDefaultOption(options, defaultVal) {
-	return options?.collect { k, v ->
+	return options?.collectEntries { k, v ->
 		if ("${k}" == "${defaultVal}") {
 			v = "${v} [DEFAULT]"		
 		}
@@ -969,7 +1021,7 @@ private getOverloadOptions() {
 
 private getPowerReportingThresholdOptions() {
 	def options = [0:"Disabled"]
-	[1,2,3,4,5,10,25,50,75,100,150,200,250,300,400,500,750,1000,1250,1500,1750,2000,2500,3000,3500,4000,4500,5000,6000,7000,8000,9000,10000,12500,15000].each {
+	[1,2,3,4,5,10,25,50,75,100,150,200,250,300,400,500,750,1000,1250,1500,1750,2000,2500,3000,3500,4000,4500,5000].each {
 		options["${it}"] = "${it} W"
 	}
 	return options
@@ -1017,7 +1069,13 @@ private executeSendEvent(child, evt) {
 				evt.descriptionText = evt.descriptionText.replace(device.displayName, child.displayName)
 				logDebug "${evt.descriptionText}"
 			}
-			child.sendEvent(evt)						
+			child.sendEvent(evt)
+
+			if ((evt.name == "switch") && (child.deviceNetworkId.endsWith("USB"))) {
+				evt.name = "usbPort"
+				child.sendEvent(evt)
+			}
+			
 		}
 		else {
 			logDebug "${evt.descriptionText}"

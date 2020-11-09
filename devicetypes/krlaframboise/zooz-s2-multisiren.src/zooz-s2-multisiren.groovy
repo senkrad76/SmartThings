@@ -1,14 +1,36 @@
 /**
- *  Zooz S2 Multisiren v1.2
+ *  Zooz S2 Multisiren v1.6
  *  (Models: ZSE19)
  *
- *  Author: 
+ *  Author:
  *    Kevin LaFramboise (krlaframboise)
  *
  *	Documentation: https://community.smartthings.com/t/release-zooz-s2-multisiren-zse19/142891?u=krlaframboise
  *
  *
  *  Changelog:
+ *
+ *    1.6 (09/20/2020)  ***POSSIBLE BREAKING CHANGES***
+ *      - I'm not sure what will happen to existing Automations that are using the on or off command in the "Then" section.
+ *      - Created custom vid to remove all the extra stuff from new mobile app's device view and Automation.
+ *
+ *    1.5.1 (09/13/2020)
+ *      - Removed vid which makes it fully supported in the new mobile app.
+ *      - Create switch on/off events when "switch on action" setting is not turn on alarm to prevent network errors.
+ *      - Create temporary level event in setLevel to prevent network errors.
+ *
+ *    1.4 (05/24/2020)
+ *      - Added lifeline association check and add the association if it wasn't automatically added during inclusion.
+ *
+ *    1.3.2 (05/18/2020)
+ *      - Fixed bug with health check interval.
+ *
+ *    1.3.1 (03/13/2020)
+ *      - Fixed bug with enum settings that was caused by a change ST made in the new mobile app.
+ *
+ *    1.3 (08/07/2019)
+ *      - Enhanced UI for new mobile app.
+ *			- Added Tone capability and "Beep Sound" setting.
  *
  *    1.2 (05/06/2018)
  *      - Added volume setting.
@@ -33,17 +55,21 @@
  */
 metadata {
 	definition (
-		name: "Zooz S2 Multisiren", 
-		namespace: "krlaframboise", 
+		name: "Zooz S2 Multisiren",
+		namespace: "krlaframboise",
 		author: "Kevin LaFramboise",
-		vid:"generic-siren"
+		ocfDeviceType: "x.com.st.d.siren",
+		mnmn: "SmartThingsCommunity",
+		vid: "afe81aef-5f8c-37b4-a324-5b61bcf3970c"
+		
 	) {
 		capability "Actuator"
 		capability "Sensor"
 		capability "Alarm"
-		capability "Switch"		
+		capability "Switch"
 		capability "Audio Notification"
 		capability "Music Player"
+		capability "Tone"
 		capability "Speech Synthesis"
 		capability "Switch Level"
 		capability "Temperature Measurement"
@@ -53,25 +79,25 @@ metadata {
 		capability "Refresh"
 		capability "Tamper Alert"
 		capability "Health Check"
-				
+
 		attribute "primaryStatus", "string"
 		attribute "secondaryStatus", "string"
-		attribute "firmwareVersion", "string"		
+		attribute "firmwareVersion", "string"
 		attribute "lastCheckin", "string"
-		
-		
+
+
 		// Music Player commands used by some apps
 		command "playSoundAndTrack"
 		command "playTrackAtVolume"
 		command "playText"
 		command "playSound"
-		
+
 
 		fingerprint mfr:"027A", prod:"000C", model:"0003", deviceJoinName: "Zooz S2 Multisiren"
 	}
 
 	simulator { }
-		
+
 	tiles(scale: 2) {
 		multiAttributeTile(name:"primaryStatus", type: "generic", width: 6, height: 4){
 			tileAttribute ("device.primaryStatus", key: "PRIMARY_CONTROL") {
@@ -83,52 +109,52 @@ metadata {
 				attributeState "default", label:'${currentValue}'
 			}
 		}
-		
+
 		standardTile("sliderText", "generic", width: 2, height: 2) {
 			state "default", label:'Play Sound #'
 		}
-		
+
 		controlTile("slider", "device.level", "slider",	height: 2, width: 4) {
 			state "level", action:"switch level.setLevel"
 		}
-		
+
 		standardTile("off", "device.alarm", width: 2, height: 2) {
 			state "default", label:'Off', action: "alarm.off"
 		}
-		
+
 		standardTile("on", "device.switch", width: 2, height: 2) {
 			state "default", label:'On', action: "switch.on"
 		}
-		
+
 		standardTile("alarm", "device.alarm", width: 2, height: 2) {
 			state "default", label:'Alarm', action: "alarm.both"
 		}
-		
+
 		standardTile("refresh", "device.refresh", width: 2, height: 2) {
 			state "default", label:'Refresh', action: "refresh.refresh", icon:"st.secondary.refresh-icon"
 		}
-		
+
 		standardTile("configure", "device.configure", width: 2, height: 2) {
 			state "default", label:'Sync', action: "configuration.configure", icon:"st.secondary.tools"
 		}
-		
+
 		valueTile("battery", "device.battery", width: 2, height: 2) {
 			state "default", label:'${currentValue}% Battery'
 		}
-		
+
 		valueTile("firmwareVersion", "device.firmwareVersion", decoration:"flat", width:3, height: 1) {
 			state "firmwareVersion", label:'Firmware ${currentValue}'
 		}
-		
+
 		valueTile("syncStatus", "device.syncStatus", decoration:"flat", width:3, height: 1) {
 			state "syncStatus", label:'${currentValue}'
 		}
-		
+
 		main "primaryStatus"
 		details(["primaryStatus", "sliderText", "slider", "off", "alarm", "on", "refresh", "configure", "battery", "firmwareVersion", "syncStatus"])
 	}
-		
-	preferences {	
+
+	preferences {
 		configParams.each { param ->
 			input "configParam${param.num}", "enum",
 				title: "${param.name}:",
@@ -137,13 +163,19 @@ metadata {
 				displayDuringSetup: true,
 				options: param.options
 		}
-		
+
 		input "switchOnAction", "enum",
 			title: "Switch On Action",
 			defaultValue: "0",
 			required: false,
 			options: setDefaultOption(switchOnActionOptions, "0")
-			
+
+		input "beepSound", "enum",
+			title: "Beep Sound",
+			defaultValue: "1",
+			required: false,
+			options: setDefaultOption(chimeSoundOptions, "1")
+
 		input "chimeVolume", "enum",
 			title: "Chime Volume",
 			defaultValue: chimeVolumeSetting,
@@ -155,16 +187,16 @@ metadata {
 			// defaultValue: "0",
 			// required: false,
 			// options: setDefaultOption(tempOffsetOptions, "0")
-			
+
 		// input "humidityOffset", "enum",
 			// title: "Humidity Offset",
 			// defaultValue: "0",
 			// required: false,
 			// options: setDefaultOption(humidityOffsetOptions, "0")
-		
-		input "debugOutput", "bool", 
-			title: "Enable Debug Logging?", 
-			defaultValue: true, 
+
+		input "debugOutput", "bool",
+			title: "Enable Debug Logging?",
+			defaultValue: true,
 			required: false
 	}
 }
@@ -173,53 +205,75 @@ private getChimeVolumeSetting() {
 	return settings?.chimeVolume ?: "32"
 }
 
-def installed () { 
+def installed () {
+	logDebug "installed()..."
+	
+	initialize()	
 	return response(refresh())
 }
 
 
-def updated() {	
+def updated() {
 	if (!isDuplicateCommand(state.lastUpdated, 3000)) {
 		state.lastUpdated = new Date().time
 
-		runIn(2, updateSyncStatus)
+		logDebug "updated()..."
 		
+		initialize()
+
+		runIn(2, updateSyncStatus)
+
 		def cmds = []
 		if (pendingChanges > 0) {
 			cmds += configure()
 		}
 		return cmds ? response(cmds) : []
-	}	
+	}
+}
+
+private initialize() {
+	if (!device.currentValue("switch")) {
+		sendEvent(name: "switch", value: "off", displayed: false)
+		sendEvent(name: "alarm", value: "off", displayed: false)
+		sendEvent(name: "tamper", value: "clear", displayed: false)
+		sendEvent(name: "level", value: 100, unit: "%", displayed: false)
+		sendEvent(name: "temperature", value: 68, unit: getTemperatureScale(), displayed: false)
+		sendEvent(name: "humidity", value: 10, unit: "%", displayed: false)
+		sendEvent(name: "battery", value: 100, unit: "%", displayed: false)
+	}
 }
 
 
-def configure() {	
+def configure() {
+	logDebug "configure()..."
+
 	runIn(5, updateSyncStatus)
-			
+
 	def cmds = []
-	
-	if (!device.currentValue("switch")) {
-		sendEvent(getEventMap("switch", "off"))
-		sendEvent(getEventMap("level", 0))
-		sendEvent(getEventMap("alarm", "off"))
-		sendEvent(getEventMap("primaryStatus", "off"))
-	}
 	
 	if (!device.currentValue("firmwareVersion")) {
 		cmds << versionGetCmd()
 	}
-	
+
+	if (!state.linelineAssoc) {
+		if (state.linelineAssoc != null) {
+			logDebug "Adding missing lineline association..."
+			cmds << lifelineAssociationSetCmd()
+		}
+		cmds << lifelineAssociationGetCmd()
+	}
+
 	logDebug "CHANGING Volume to ${Integer.parseInt(chimeVolumeSetting, 16)}%"
 	cmds << soundSwitchConfigSetVolumeCmd(chimeVolumeSetting)
 	state.chimeVolume = chimeVolumeSetting
-	
-	configParams.each { 
+
+	configParams.each {
 		logDebug "CHANGING ${it.name}(#${it.num}) from ${getParamStoredValue(it.num)} to ${it.value}"
 		cmds << configSetCmd(it, it.value)
 		cmds << configGetCmd(it)
-		cmds << configGetCmd(it)		
+		cmds << configGetCmd(it)
 	}
-	
+
 	return delayBetween(cmds, 250)
 }
 
@@ -230,14 +284,27 @@ def on() {
 		return both()
 	}
 	else {
+		sendEvent(name: "switch", value:"on")
+		runIn(2, resetSwitch)
+
 		def sound = safeToInt(settings?.switchOnAction, 0)
 		if (sound) {
 			return playSound(sound)
-		}	
+		}
 		else {
 			log.warn "Ignoring 'on' command because the Switch On Action setting is set to 'Do Nothing'"
 		}
 	}
+}
+
+def resetSwitch() {
+	sendEvent(name: "switch", value:"off")
+}
+
+
+def beep() {
+	logDebug "beep()..."
+	return playSound(safeToInt(settings?.beepSound, 0))
 }
 
 
@@ -269,10 +336,10 @@ def previousTrack() {
 private logUnsupportedCommand(cmdName) {
 	logTrace "This device does not support the ${cmdName} command."
 }
- 
- 
+
+
 // Audio Notification Capability Commands
-def playSoundAndTrack(URI, duration=null, track, volume=null) {	
+def playSoundAndTrack(URI, duration=null, track, volume=null) {
 	playTrack(URI, volume)
 }
 def playTrackAtVolume(URI, volume) {
@@ -285,17 +352,17 @@ def playTrackAndResume(URI, volume=null, otherVolume=null) {
 		volume = otherVolume
 	}
 	playTrack(URI, volume)
-}	
+}
 def playTrackAndRestore(URI, volume=null, otherVolume=null) {
 	if (otherVolume) {
 		// Fix for Speaker Notify w/ Sound not using command as documented.
 		volume = otherVolume
 	}
 	playTrack(URI, volume)
-}	
+}
 def playTextAndResume(message, volume=null) {
 	playText(message, volume)
-}	
+}
 def playTextAndRestore(message, volume=null) {
 	playText(message, volume)
 }
@@ -308,7 +375,7 @@ def speak(message) {
 def playTrack(URI, volume=null) {
 	logTrace "Executing playTrack($URI, $volume)"
 	def text = getTextFromTTSUrl(URI)
-	playText(!text ? URI : text, volume)	
+	playText(!text ? URI : text, volume)
 }
 
 private getTextFromTTSUrl(URI) {
@@ -325,14 +392,26 @@ def playText(message, volume=null) {
 
 
 def setLevel(level, duration=null) {
-	logDebug "setLevel(${level})..."	
-	playSound(level)
+	sendEvent(name: "level", value: level, unit: "%")
+	runIn(2, resetLevel)
+
+	if (level) {
+		logDebug "setLevel(${level})..."
+		return playSound(level)
+	}
+	else {
+		return off()
+	}
+}
+
+def resetLevel() {
+	sendEvent(name: "level", value: 100, unit: "%")
 }
 
 
 def playSound(sound) {
 	logDebug "playSound(${sound})"
-		
+
 	def cmds = []
 	def val = safeToInt(sound, 0)
 	if (val) {
@@ -343,11 +422,11 @@ def playSound(sound) {
 		}
 		else {
 			log.warn "Can't play sound #${val} beacuse alarm is on"
-		}		
+		}
 	}
 	else {
 		log.warn "${sound} is not a valid sound number"
-	}	
+	}
 	return cmds
 }
 
@@ -362,11 +441,11 @@ def siren() {
 	return both()
 }
 
-def strobe() { 
-	return both() 
+def strobe() {
+	return both()
 }
 
-def both() { 
+def both() {
 	log.debug "Turning on Siren..."
 	return delayBetween([
 		switchBinarySetCmd(0xFF),
@@ -376,7 +455,12 @@ def both() {
 
 
 def off() {
-	logDebug "off()..."	
+	logDebug "off()..."
+
+	if (settings?.switchOnAction != "on") {
+		resetSwitch()
+	}
+
 	return delayBetween([
 		switchBinarySetCmd(0),
 		configSetCmd(playSoundParam, 0)
@@ -386,11 +470,11 @@ def off() {
 
 def refresh() {
 	logDebug "refresh()..."
-	
+
 	runIn(5, updateSecondaryStatus)
-	
+
 	state.lastBattery = null
-	return delayBetween([		
+	return delayBetween([
 		sensorMultilevelGetCmd(tempSensorType),
 		sensorMultilevelGetCmd(humiditySensorType)
 	], 2500)
@@ -398,7 +482,7 @@ def refresh() {
 
 
 def ping() {
-	logDebug "ping()..."	
+	logDebug "ping()..."
 	return sendResponse([basicGetCmd()])
 }
 
@@ -414,6 +498,14 @@ private sendResponse(cmds) {
 
 private versionGetCmd() {
 	return secureCmd(zwave.versionV1.versionGet())
+}
+
+private lifelineAssociationSetCmd() {
+	return secureCmd(zwave.associationV2.associationSet(groupingIdentifier: 1, nodeId: [zwaveHubNodeId]))
+}
+
+private lifelineAssociationGetCmd() {
+	return secureCmd(zwave.associationV2.associationGet(groupingIdentifier: 1))
 }
 
 private basicGetCmd() {
@@ -460,7 +552,7 @@ private secureCmd(cmd) {
 	}
 	else {
 		return cmd.format()
-	}	
+	}
 }
 
 private isSecurityEnabled() {
@@ -493,7 +585,7 @@ private getCommandClassVersions() {
 }
 
 
-def parse(String description) {	
+def parse(String description) {
 	def result = []
 	try {
 		if ("${description}".startsWith("Err 106")) {
@@ -502,19 +594,19 @@ def parse(String description) {
 		else {
 			def cmd = zwave.parse(description, commandClassVersions)
 			if (cmd) {
-				result += zwaveEvent(cmd)		
+				result += zwaveEvent(cmd)
 			}
 			else {
 				log.warn "Unable to parse: $description"
 			}
 		}
-			
+
 		if (!isDuplicateCommand(state.lastCheckinTime, 59000)) {
 			state.lastCheckinTime = new Date().time
 			sendEvent(getEventMap("lastCheckin", convertToLocalTimeString(new Date())))
 		}
-		
-		if (!isDuplicateCommand(state.lastBattery, (12 * 60 * 60 * 1000))) {			
+
+		if (!isDuplicateCommand(state.lastBattery, (12 * 60 * 60 * 1000))) {
 			result << response(batteryGetCmd())
 		}
 	}
@@ -526,8 +618,8 @@ def parse(String description) {
 
 
 def zwaveEvent(physicalgraph.zwave.commands.securityv1.SecurityMessageEncapsulation cmd) {
-	def encapsulatedCmd = cmd.encapsulatedCommand(commandClassVersions)	
-	
+	def encapsulatedCmd = cmd.encapsulatedCommand(commandClassVersions)
+
 	def result = []
 	if (encapsulatedCmd) {
 		result += zwaveEvent(encapsulatedCmd)
@@ -541,10 +633,10 @@ def zwaveEvent(physicalgraph.zwave.commands.securityv1.SecurityMessageEncapsulat
 
 def zwaveEvent(physicalgraph.zwave.commands.notificationv3.NotificationReport cmd) {
 	logTrace "NotificationReport: $cmd"
-	
+
 	if (cmd.notificationType == 7) {
-		def tamperVal 
-		if (cmd.event == 3) {		
+		def tamperVal
+		if (cmd.event == 3) {
 			tamperVal = "detected"
 		}
 		else if (cmd.event == 0 && cmd.eventParameter[0] == 3) {
@@ -560,20 +652,33 @@ def zwaveEvent(physicalgraph.zwave.commands.notificationv3.NotificationReport cm
 
 def zwaveEvent(physicalgraph.zwave.commands.versionv1.VersionReport cmd) {
 	logTrace "VersionReport: ${cmd}"
-	
+
 	def version = "${cmd.applicationVersion}.${cmd.applicationSubVersion}"
-	
+
 	if (version != device.currentValue("firmwareVersion")) {
 		logDebug "Firmware: ${version}"
 		sendEvent(name: "firmwareVersion", value: version, displayed:false)
 	}
-	return []	
+	return []
+}
+
+
+def zwaveEvent(physicalgraph.zwave.commands.associationv2.AssociationReport cmd) {
+	logTrace "AssociationReport: ${cmd}"
+
+	updateSyncStatus("Syncing...")
+	runIn(5, updateSyncStatus)
+
+	if (cmd.groupingIdentifier == 1) {
+		state.linelineAssoc = (cmd.nodeId == [zwaveHubNodeId]) ? true : false
+	}
+	return []
 }
 
 
 def zwaveEvent(physicalgraph.zwave.commands.batteryv1.BatteryReport cmd) {
 	logTrace "BatteryReport: $cmd"
-	
+
 	def val = (cmd.batteryLevel == 0xFF ? 1 : cmd.batteryLevel)
 	if (val > 100) {
 		val = 100
@@ -581,26 +686,26 @@ def zwaveEvent(physicalgraph.zwave.commands.batteryv1.BatteryReport cmd) {
 	else if (val < 1) {
 		val = 1
 	}
-	
+
 	state.lastBattery = new Date().time
-	
+
 	sendEvent(getEventMap("battery", val, true, "%"))
 	return []
-}	
+}
 
 
-def zwaveEvent(physicalgraph.zwave.commands.configurationv2.ConfigurationReport cmd) {	
+def zwaveEvent(physicalgraph.zwave.commands.configurationv2.ConfigurationReport cmd) {
 	logTrace "ConfigurationReport: ${cmd}"
-	
+
 	updateSyncStatus("Syncing...")
 	runIn(5, updateSyncStatus)
-	
+
 	def param = configParams.find { it.num == cmd.parameterNumber }
-	if (param) {	
+	if (param) {
 		def val = cmd.size == 1 ? cmd.configurationValue[0] : cmd.scaledConfigurationValue
-		
+
 		logDebug "${param.name}(#${param.num}) = ${val}"
-		setParamStoredValue(param.num, val)	
+		setParamStoredValue(param.num, val)
 
 		if (param == reportingIntervalParam) {
 			updateHealthCheckInterval(val)
@@ -608,37 +713,28 @@ def zwaveEvent(physicalgraph.zwave.commands.configurationv2.ConfigurationReport 
 	}
 	else {
 		logDebug "Unknown Parameter #${cmd.parameterNumber} = ${val}"
-	}		
+	}
 	return []
 }
 
 private updateHealthCheckInterval(minutes) {
-	def minReportingInterval = calculateMinimumReportingInterval()
-	
+	def minReportingInterval = (((reportingIntervalParam.value < 60) ? 60 : reportingIntervalParam.value) * 60)
+
 	if (state.minReportingInterval != minReportingInterval) {
 		state.minReportingInterval = minReportingInterval
-			
+
 		// Set the Health Check interval so that it can be skipped three times plus 5 minutes.
 		def checkInterval = ((minReportingInterval * 3) + (5 * 60))
-		
+
 		def eventMap = getEventMap("checkInterval", checkInterval)
 		eventMap.data = [protocol: "zwave", hubHardwareId: device.hub.hardwareID]
-		
+
 		sendEvent(eventMap)
-	}	
-}
-
-private calculateMinimumReportingInterval() {
-	if (reportingIntervalParam.value < (30 * 60)) {
-		return (30 * 60)
-	}
-	else {
-		return reportingIntervalParam.value
 	}
 }
 
-def updateSyncStatus(status=null) {	
-	if (status == null) {	
+def updateSyncStatus(status=null) {
+	if (status == null) {
 		def changes = getPendingChanges()
 		if (changes > 0) {
 			status = "${changes} Pending Change" + ((changes > 1) ? "s" : "")
@@ -646,7 +742,7 @@ def updateSyncStatus(status=null) {
 		else {
 			status = "Synced"
 		}
-	}	
+	}
 	if ("${syncStatus}" != "${status}") {
 		sendEvent(getEventMap("syncStatus", status))
 	}
@@ -657,7 +753,7 @@ private getSyncStatus() {
 }
 
 private getPendingChanges() {
-	return (configParams.count { isConfigParamSynced(it) ? 0 : 1 } + (settings?.chimeVolume != state.chimeVolume ? 1 : 0))
+	return (configParams.count { isConfigParamSynced(it) ? 0 : 1 } + (settings?.chimeVolume != state.chimeVolume ? 1 : 0) + (!state.linelineAssoc ? 1 : 0))
 }
 
 private isConfigParamSynced(param) {
@@ -675,49 +771,49 @@ private setParamStoredValue(paramNum, value) {
 
 def zwaveEvent(physicalgraph.zwave.commands.switchbinaryv1.SwitchBinaryReport cmd) {
 	logTrace "SwitchBinaryReport: ${cmd}"
-	
+
 	def primaryStatus = "off"
 	def alarmVal = "off"
-	
+
 	if (cmd.value) {
 		primaryStatus = "alarm"
 		alarmVal = "both"
 	}
-	
+
 	sendEvent(getEventMap("alarm", alarmVal, true))
 	sendEvent(getEventMap("primaryStatus", primaryStatus))
-	
+
 	return []
 }
 
 
 def zwaveEvent(physicalgraph.zwave.commands.basicv1.BasicReport cmd, endPoint=0) {
 	logTrace "BasicReport: ${cmd}"
-	
+
 	return []
 }
 
 
 def zwaveEvent(physicalgraph.zwave.commands.sensormultilevelv5.SensorMultilevelReport cmd) {
 	logTrace "SensorMultilevelReport: ${cmd}"
-	
+
 	runIn(2, updateSecondaryStatus)
-	
+
 	switch (cmd.sensorType) {
 		case tempSensorType:
 			def unit = cmd.scale ? "F" : "C"
 			def temp = convertTemperatureIfNeeded(cmd.scaledSensorValue, unit, cmd.precision)
-			
+
 			sendEvent(getEventMap("temperature", temp, true, getTemperatureScale()))
-			break		
-			
-		case humiditySensorType:			
+			break
+
+		case humiditySensorType:
 			sendEvent(getEventMap("humidity", cmd.scaledSensorValue, true, "%"))
-			break		
+			break
 		default:
 			logDebug "Unknown Sensor Type: ${cmd.sensorType}"
 	}
-	
+
 	return []
 }
 
@@ -725,11 +821,11 @@ def updateSecondaryStatus() {
 	def temp = device.currentValue("temperature")
 	def humidity = device.currentValue("humidity")
 	def value = "${temp}°${getTemperatureScale()} / ${humidity}% RH"
-	
+
 	if (device.currentValue("tamper") == "detected") {
 		value = "TAMPERING / ${value}"
 	}
-	
+
 	sendEvent(name:"secondaryStatus", value:value, displayed: false)
 }
 
@@ -756,7 +852,7 @@ private getAlarmDurationParam() {
 }
 
 private getReportingIntervalParam() {
-	return getParam(2, "Temperature/Humidity Reporting Interval", 2, 30, reportingIntervalOptions) 
+	return getParam(2, "Temperature/Humidity Reporting Interval", 2, 30, reportingIntervalOptions)
 }
 
 private getPlaySoundParam() {
@@ -764,21 +860,21 @@ private getPlaySoundParam() {
 }
 
 private getParam(num, name, size, defaultVal, options=null) {
-	def val = safeToInt((settings ? settings["configParam${num}"] : null), defaultVal) 
-	
+	def val = safeToInt((settings ? settings["configParam${num}"] : null), defaultVal)
+
 	def map = [num: num, name: name, size: size, value: val]
 	if (options) {
 		map.valueName = options?.find { k, v -> "${k}" == "${val}" }?.value
 		map.options = setDefaultOption(options, defaultVal)
 	}
-	
+
 	return map
 }
 
 private setDefaultOption(options, defaultVal) {
-	return options?.collect { k, v ->
+	return options?.collectEntries { k, v ->
 		if ("${k}" == "${defaultVal}") {
-			v = "${v} [DEFAULT]"		
+			v = "${v} [DEFAULT]"
 		}
 		["$k": "$v"]
 	}
@@ -790,10 +886,10 @@ private getAlarmDurationOptions() {
 	[10,15,20,25,30,45].each {
 		options["${it}"] = "${it} Seconds"
 	}
-	
+
 	options["60"] = "1 Minute"
 	options["90"] = "1 Minute 30 Seconds"
-	
+
 	(2..10).each {
 		options["${it * 60}"] = "${it} Minutes"
 	}
@@ -802,31 +898,39 @@ private getAlarmDurationOptions() {
 
 private getReportingIntervalOptions() {
 	def options = ["1":"1 Minute"]
-	
+
 	[2,3,4,5,10,15,20,30,45].each {
 		options["${it}"] = "${it} Minutes"
 	}
-	
+
 	options["60"] = "1 Hour"
-	
+
 	[2,3,4,5,6,7,8,9,10,11,12,15,18,21].each {
-		options["${it * 60}"] = "${it} Hours"		
+		options["${it * 60}"] = "${it} Hours"
 	}
-	
+
 	options["1440"] = "1 Day"
-	
+
 	return options
 }
 
 private getSwitchOnActionOptions() {
 	def options = [
 		"0":"Do Nothing",
-		"on": "Turn On Siren"	
+		"on": "Turn On Siren"
 	]
-	
-	(1..99).each {
+
+	(1..37).each {
 		options["${it}"] = "Play Sound #${it}"
-	}	
+	}
+	return options
+}
+
+private getChimeSoundOptions() {
+	def options = [:]
+	(1..37).each {
+		options["${it}"] = "Sound #${it}"
+	}
 	return options
 }
 
@@ -844,29 +948,29 @@ private convertToHex(num) {
 
 private getTempOffsetOptions() {
 	def options = [:]
-	
+
 	(-10..-1).each {
 		options["${it}"] = "${it}°"
 	}
-	
+
 	options["0"] = "No Offset"
-	
+
 	(1..10).each {
 		options["${it}"] = "${it}°"
 	}
-	
+
 	return options
 }
 
 private getHumidityOffsetOptions() {
 	def options = [:]
-	
+
 	(-10..-1).each {
 		options["${it}"] = "${it}%"
 	}
-	
+
 	options["0"] = "No Offset"
-	
+
 	(1..10).each {
 		options["${it}"] = "${it}%"
 	}
@@ -874,7 +978,7 @@ private getHumidityOffsetOptions() {
 }
 
 
-private getEventMap(name, value, displayed=false, unit=null) {	
+private getEventMap(name, value, displayed=false, unit=null) {
 	def eventMap = [
 		name: name,
 		value: value,
@@ -882,11 +986,11 @@ private getEventMap(name, value, displayed=false, unit=null) {
 		isStateChange: true,
 		descriptionText: "${device.displayName} - ${name} is ${value}"
 	]
-	
+
 	if (unit) {
 		eventMap.unit = unit
 		eventMap.descriptionText = "${eventMap.descriptionText} ${unit}"
-	}	
+	}
 	return eventMap
 }
 
@@ -903,18 +1007,18 @@ private roundTwoPlaces(val) {
 	return Math.round(safeToDec(val) * 100) / 100
 }
 
-private convertToLocalTimeString(dt) {	
+private convertToLocalTimeString(dt) {
 	def timeZoneId = location?.timeZone?.ID
 	if (timeZoneId) {
 		return dt.format("MM/dd/yyyy hh:mm:ss a", TimeZone.getTimeZone(timeZoneId))
 	}
 	else {
 		return "$dt"
-	}	
+	}
 }
 
 private isDuplicateCommand(lastExecuted, allowedMil) {
-	!lastExecuted ? false : (lastExecuted + allowedMil > new Date().time) 
+	!lastExecuted ? false : (lastExecuted + allowedMil > new Date().time)
 }
 
 private logDebug(msg) {
@@ -924,5 +1028,5 @@ private logDebug(msg) {
 }
 
 private logTrace(msg) {
-	log.trace "$msg"
+	// log.trace "$msg"
 }

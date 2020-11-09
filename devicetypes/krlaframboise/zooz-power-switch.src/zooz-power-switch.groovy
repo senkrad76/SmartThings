@@ -1,5 +1,5 @@
 /**
- *  Zooz Power Switch v2.0
+ *  Zooz Power Switch v2.2
  *  (Models: ZEN15)
  *
  *  Author: 
@@ -9,6 +9,12 @@
  *    
  *
  *  Changelog:
+ *
+ *    2.2 (09/23/2019)
+ *      - Added setting for "Disable On/Off Control from the Hub"
+ *
+ *    2.1 (09/12/2019)
+ *      - Changed active power setting to decimal.
  *
  *    2.0 (02/10/2019)
  *      - Added support for firmware version 2.0 config parameters.
@@ -47,11 +53,13 @@
  *  for the specific language governing permissions and limitations under the License.
  *
  */
+ 
 metadata {
 	definition (
 		name: "Zooz Power Switch", 
 		namespace: "krlaframboise", 
-		author: "Kevin LaFramboise",
+		author: "Kevin LaFramboise", 
+		ocfDeviceType: "oic.d.switch",
 		vid:"generic-switch-power-energy"
 	) {
 		capability "Actuator"
@@ -99,7 +107,7 @@ metadata {
 			required: false,
 			displayDuringSetup: true
 			
-		input "inactivePower", "number",
+		input "inactivePower", "decimal",
 			title: "Report inactive when power is less than or equal to:",
 			defaultValue: inactivePowerSetting,
 			required: false,
@@ -108,6 +116,8 @@ metadata {
 		["Power", "Energy", "Voltage", "Current"].each {
 			getBoolInput("display${it}", "Display ${it} Activity", true)
 		}
+		
+		getBoolInput("disableHubControl", "Disable On/Off Control from the Hub", false)
 
 		getBoolInput("debugOutput", "Enable Debug Logging", true)
 	}
@@ -287,21 +297,36 @@ def ping() {
 }
 
 
-def on() {
-	logDebug "on()..."
-	return delayBetween([
-		switchBinarySetCmd(0xFF),
-		switchBinaryGetCmd()
-	], 500)
+def on() {	
+	if (!settings?.disableHubControl) {
+		logDebug "on()..."
+		return delayBetween([
+			switchBinarySetCmd(0xFF),
+			switchBinaryGetCmd()
+		], 500)
+	}
+	else {
+		logDisabledHubControlMessage("on")
+	}
 }
 
 def off() {
-	logDebug "off()..."
-	return delayBetween([
-		switchBinarySetCmd(0x00),
-		switchBinaryGetCmd()
-	], 500)
+	if (!settings?.disableHubControl) {
+		logDebug "off()..."
+		return delayBetween([
+			switchBinarySetCmd(0x00),
+			switchBinaryGetCmd()
+		], 500)
+	}
+	else {
+		logDisabledHubControlMessage("off")
+	}
 }
+
+private logDisabledHubControlMessage(cmd) {
+	log.warn "Ignored '${cmd}' command because the 'Disable On/Off Control from the Hub' setting is set to true."
+}
+
 
 def refresh() {
 	logDebug "refresh()..."
@@ -741,7 +766,7 @@ private getEnergyPriceSetting() {
 }
 
 private getInactivePowerSetting() {
-	return safeToInt(settings?.inactivePower, 0)
+	return safeToDec(settings?.inactivePower, 0)
 }
 
 private getDebugOutputSetting() {
